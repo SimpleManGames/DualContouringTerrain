@@ -4,6 +4,7 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Rendering;
+using Unity.Transforms;
 using UnityEngine;
 
 // Tag for indicating if a mesh needs to be generated
@@ -29,18 +30,25 @@ public class MeshGenerator : MonoBehaviour, IConvertGameObjectToEntity
         dstManager.AddBuffer<MeshGeneratorVertexData>(entity);
         dstManager.AddBuffer<MeshGeneratorTriangleData>(entity);
 
-        //DynamicBuffer<MeshGeneratorVertexData> vertexDataBuffer = dstManager.GetBuffer<MeshGeneratorVertexData>(entity);
-        //vertexDataBuffer.Add(new MeshGeneratorVertexData { Vertex = new float3(1, 1, 2) }); 
-        //vertexDataBuffer.Add(new MeshGeneratorVertexData { Vertex = new float3(1, 1, 2) });
-
-        // Prompt the system for building the mesh
+        // Prompt the system for building the mesh by adding the Tag
         dstManager.AddComponentData(entity, new MeshGeneratorTag());
         dstManager.AddSharedComponentData(entity, new RenderMesh());
+
+
     }
 }
 
 public class MeshGeneratorSystem : JobComponentSystem
 {
+    private Mesh mesh;
+
+    protected override void OnCreate()
+    {
+        base.OnCreate();
+
+        mesh = new Mesh();
+    }
+
     [RequireComponentTag(typeof(MeshGeneratorVertexData), typeof(MeshGeneratorTriangleData))]
     private struct MeshGeneratorJob : IJobForEachWithEntity<MeshGeneratorTag>
     {
@@ -49,15 +57,22 @@ public class MeshGeneratorSystem : JobComponentSystem
         [NativeDisableParallelForRestriction] public BufferFromEntity<MeshGeneratorVertexData> vertexData;
         [NativeDisableParallelForRestriction] public BufferFromEntity<MeshGeneratorTriangleData> triangleData;
 
-        // Location were we will store the entity to pass back to main thread
+        // Location were we will store the data to pass back to main thread
         public NativeArray<Entity> thisEntity;
 
         public void Execute(Entity entity, int index, [ReadOnly] ref MeshGeneratorTag tag)
         {
-            var vertexArray = vertexData[entity];
-            //vertexArray[0] = new MeshGeneratorVertexData() { Vertex = new float3(2, 2, 2) };
+            this.thisEntity[0] = entity;
 
-            thisEntity[0] = entity;
+            var vertexArray = vertexData[entity];
+            vertexArray.Add(new MeshGeneratorVertexData { Vertex = new float3(0, 0, 0) });
+            vertexArray.Add(new MeshGeneratorVertexData { Vertex = new float3(0, 0, 1) });
+            vertexArray.Add(new MeshGeneratorVertexData { Vertex = new float3(1, 0, 0) });
+
+            var triangleArray = triangleData[entity];
+            triangleArray.Add(new MeshGeneratorTriangleData() { Triangle = 0 });
+            triangleArray.Add(new MeshGeneratorTriangleData() { Triangle = 1 });
+            triangleArray.Add(new MeshGeneratorTriangleData() { Triangle = 2 });
         }
     }
 
@@ -78,12 +93,41 @@ public class MeshGeneratorSystem : JobComponentSystem
 
         JobHandle handle = meshGenJob.Schedule(this, inputDeps);
         handle.Complete();
+
+        if (entity[0] == Entity.Null)
+        {
+            entity.Dispose();
+            return handle;
+        }
+
         // Once job is done we have the entity that we worked on
         // So now that the job is over with we can remove the tag
         // So it won't update anymore till we re-add the tag to
         // Prompt a re-build
-        EntityManager.RemoveComponent(entity, typeof(MeshGeneratorTag));
+        EntityManager.RemoveComponent(entity[0], typeof(MeshGeneratorTag));
+
+        var renderMesh = EntityManager.GetSharedComponentData<RenderMesh>(entity[0]);
+
+        NativeArray<Vector3> nativeVertexArray = GetBufferFromEntity<MeshGeneratorVertexData>(true)[entity[0]].Reinterpret<Vector3>().ToNativeArray(Allocator.TempJob);
+        NativeArray<int> nativeTriangleArray = GetBufferFromEntity<MeshGeneratorTriangleData>(true)[entity[0]].Reinterpret<int>().ToNativeArray(Allocator.TempJob);
+
+        mesh.vertices = nativeVertexArray.ToArray();
+        mesh.triangles = nativeTriangleArray.ToArray();
+
+        mesh.RecalculateNormals();
+
+        nativeVertexArray.Dispose();
+        nativeTriangleArray.Dispose();
+
+        EntityManager.SetSharedComponentData(entity[0], new RenderMesh
+        {
+            mesh = mesh
+        });
+
+        Debug.Log(EntityManager.GetSharedComponentData<RenderMesh>(entity[0]).mesh.vertexCount);
+
         entity.Dispose();
+
         return handle;
     }
 }
